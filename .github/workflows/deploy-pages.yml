@@ -48,3 +48,47 @@ jobs:
       - name: Deploy public site
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify public HTML and assets
+        env:
+          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import time
+          from html.parser import HTMLParser
+          from urllib.parse import urljoin
+          from urllib.request import urlopen
+
+          class Assets(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.urls = []
+
+              def handle_starttag(self, tag, attributes):
+                  attributes = dict(attributes)
+                  if tag == 'script' and attributes.get('src'):
+                      self.urls.append(attributes['src'])
+                  if tag == 'link' and attributes.get('rel') in ('stylesheet', 'icon'):
+                      self.urls.append(attributes['href'])
+
+          site_url = os.environ['SITE_URL']
+          for attempt in range(6):
+              try:
+                  with urlopen(site_url, timeout=20) as response:
+                      html = response.read().decode('utf-8-sig')
+                  assert '恋爱依恋类型测试 V3.0' in html, 'Unexpected public site'
+                  assert 'width=device-width' in html, 'Missing mobile viewport'
+                  assets = Assets()
+                  assets.feed(html)
+                  assert len(assets.urls) >= 3, 'Missing production assets'
+                  for asset in assets.urls:
+                      with urlopen(urljoin(site_url, asset), timeout=20) as response:
+                          assert response.status == 200, asset
+                          assert response.read(), 'Empty asset: ' + asset
+                  print('Public HTTPS site and production assets verified:', site_url)
+                  break
+              except Exception:
+                  if attempt == 5:
+                      raise
+                  time.sleep(5)
+          PY
